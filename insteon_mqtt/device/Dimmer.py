@@ -10,6 +10,7 @@ from ..CommandSeq import CommandSeq
 from .. import handler
 from .. import log
 from .. import message as Msg
+from .. import on_off
 from ..Signal import Signal
 from .. import util
 
@@ -54,9 +55,6 @@ class Dimmer(Base):
        down:     No arguments.  Increment the current dimmer level down.
     """
 
-    on_codes = [0x11, 0x12, 0x21, 0x23]  # on, fast on, instant on, manual on
-    off_codes = [0x13, 0x14, 0x22]  # off, fast off, instant off
-
     def __init__(self, protocol, modem, address, name=None):
         """Constructor
 
@@ -74,7 +72,8 @@ class Dimmer(Base):
         self._level = 0x00
 
         # Support dimmer style signals and motion on/off style signals.
-        self.signal_level_changed = Signal()  # (Device, level)
+        # API:  func(Device, int level, on_off.Mode mode)
+        self.signal_level_changed = Signal()
 
         # Remote (mqtt) commands mapped to methods calls.  Add to the
         # base class defined commands.
@@ -129,15 +128,14 @@ class Dimmer(Base):
         seq.add(self.db_add_ctrl_of, 0x01, self.modem.addr, 0x01,
                 refresh=False)
 
-        # For scene simulation, the modem
-
         # Finally start the sequence running.  This will return so the
         # network event loop can process everything and the on_done callbacks
         # will chain everything together.
         seq.run()
 
     #-----------------------------------------------------------------------
-    def on(self, group=0x01, level=0xFF, instant=False, on_done=None):
+    def on(self, group=0x01, level=0xff, mode=on_off.Mode.NORMAL,
+           on_done=None):
         """Turn the device on.
 
         This will send the command to the device to update it's state.
@@ -153,20 +151,21 @@ class Dimmer(Base):
         LOG.info("Dimmer %s cmd: on %s", self.addr, level)
         assert level >= 0 and level <= 0xff
         assert group == 0x01
+        assert isinstance(mode, on_off.Mode)
 
-        # Send an on or instant on command.
-        cmd1 = 0x11 if not instant else 0x21
+        # Send the requested on code value.
+        cmd1 = on_off.Mode.encode(True, mode)
         msg = Msg.OutStandard.direct(self.addr, cmd1, level)
 
-        # Use the standard command handler which will notify us when
-        # the command is ACK'ed.
+        # Use the standard command handler which will notify us when the
+        # command is ACK'ed.
         msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
         # Send the message to the PLM modem for protocol.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def off(self, group=0x01, instant=False, on_done=None):
+    def off(self, group=0x01, mode=on_off.Mode.NORMAL, on_done=None):
         """Turn the device off.
 
         This will send the command to the device to update it's state.
@@ -179,9 +178,10 @@ class Dimmer(Base):
         """
         LOG.info("Dimmer %s cmd: off", self.addr)
         assert group == 0x01
+        assert isinstance(mode, on_off.Mode)
 
         # Send an off or instant off command.
-        cmd1 = 0x13 if not instant else 0x21
+        cmd1 = on_off.Mode.encode(False, mode)
         msg = Msg.OutStandard.direct(self.addr, cmd1, 0x00)
 
         # Use the standard command handler which will notify us when
@@ -189,15 +189,16 @@ class Dimmer(Base):
         msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
         # Send the message to the PLM modem for protocol.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def set(self, level, group=0x01, instant=False, on_done=None):
+    def set(self, level, group=0x01, mode=on_off.Mode.NORMAL, on_done=None):
         """Set the device on or off.
 
         This will send the command to the device to update it's state.
         When we get an ACK of the result, we'll change our internal
         state and emit the state changed signals.
+        TODO
 
         Args:
           level:    (int/bool) If non zero, turn the device on.  Should be
@@ -210,9 +211,9 @@ class Dimmer(Base):
             if level is True:
                 level = 0xff
 
-            self.on(group, level, instant, on_done)
+            self.on(group, level, mode, on_done)
         else:
-            self.off(group, instant, on_done)
+            self.off(group, mode, on_done)
 
     #-----------------------------------------------------------------------
     def scene(self, is_on, group=0x01, on_done=None):
@@ -238,7 +239,7 @@ class Dimmer(Base):
         # the command is ACK'ed.
         callback = on_done if is_on else None
         msg_handler = handler.StandardCmd(msg, self.handle_scene, callback)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
         # Scene triggering will not turn the device off (no idea why), so we
         # have to send an explicit off command to do that.  If this is None,
@@ -267,7 +268,7 @@ class Dimmer(Base):
 
         callback = functools.partial(self.handle_increment, delta=+8)
         msg_handler = handler.StandardCmd(msg, callback, on_done)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def increment_down(self, on_done=None):
@@ -285,7 +286,7 @@ class Dimmer(Base):
 
         callback = functools.partial(self.handle_increment, delta=-8)
         msg_handler = handler.StandardCmd(msg, callback, on_done)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def set_backlight(self, level, on_done=None):
@@ -313,7 +314,32 @@ class Dimmer(Base):
                                           on_done)
 
         # Send the message to the PLM modem for protocol.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
+
+    #-----------------------------------------------------------------------
+    def set_on_level(self, level, on_done=None):
+        """TODO: doc
+
+        NOTE: default factory backlight == 0x1f
+        """
+        LOG.info("Dimmer %s setting on level to %s", self.label, level)
+
+        # Extended message data - see Insteon dev guide p156.
+        data = bytes([
+            0x01,   # D1 must be group 0x01
+            0x06,   # D2 set on level when button is pressed
+            level,  # D3 brightness level
+            ] + [0x00] * 11)
+
+        msg = Msg.OutExtended.direct(self.addr, 0x2e, 0x00, data)
+
+        # Use the standard command handler which will notify us when
+        # the command is ACK'ed.
+        msg_handler = handler.StandardCmd(msg, self.handle_on_level,
+                                          on_done)
+
+        # Send the message to the PLM modem for protocol.
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def set_flags(self, on_done, **kwargs):
@@ -325,15 +351,23 @@ class Dimmer(Base):
 
         # Check the input flags to make sure only ones we can understand were
         # passed in.
-        flags = set(["backlight"])
+        flags = set(["backlight", "on_level"])
         unknown = set(kwargs.keys()).difference(flags)
         if unknown:
             raise Exception("Unknown Dimmer flags input: %s.\n Valid flags "
                             "are: %s" % unknown, flags)
 
-        # FUTURE: to support other flags, use a CommandSeq
-        backlight = util.input_byte(kwargs, "backlight")
-        self.set_backlight(backlight, on_done)
+        seq = CommandSeq(self.protocol, "Dimmer set_flags complete", on_done)
+
+        if "backlink" in kwargs:
+            backlight = util.input_byte(kwargs, "backlight")
+            seq.add(self.set_backlight, backlight)
+
+        if "on_level" in kwargs:
+            on_level = util.input_byte(kwargs, "on_level")
+            seq.add(self.set_on_level, on_level)
+
+        seq.run()
 
     #-----------------------------------------------------------------------
     def handle_backlight(self, msg, on_done):
@@ -343,6 +377,15 @@ class Dimmer(Base):
             on_done(True, "Backlight level updated", None)
         else:
             on_done(False, "Backlight level failed", None)
+
+    #-----------------------------------------------------------------------
+    def handle_on_level(self, msg, on_done):
+        """TODO: doc
+        """
+        if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
+            on_done(True, "Button on level updated", None)
+        else:
+            on_done(False, "Button on level failed", None)
 
     #-----------------------------------------------------------------------
     def handle_broadcast(self, msg):
@@ -369,21 +412,21 @@ class Dimmer(Base):
             self.broadcast_done = None
             return
 
-        # On command.  How do we tell the level?  It's not in the
+        # On/off commands.  How do we tell the level?  It's not in the
         # message anywhere.
-        elif cmd == 0x11:
-            LOG.info("Dimmer %s broadcast ON grp: %s", self.addr, msg.group)
-            self._set_level(0xff)
+        elif on_off.Mode.is_valid(msg.cmd1):
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            LOG.info("Dimmer %s broadcast grp: %s on: %s mode: %s", self.addr,
+                     msg.group, is_on, mode)
 
-        # Off command.
-        elif cmd == 0x13:
-            LOG.info("Dimmer %s broadcast OFF grp: %s", self.addr, msg.group)
+            if is_on:
+                self._set_level(0xff, mode)
 
             # If broadcast_done is active, this is a generated broadcast and
             # we need to manually turn the device off so don't update it's
             # state until that occurs.
-            if not self.broadcast_done:
-                self._set_level(0x00)
+            elif not self.broadcast_done:
+                self._set_level(0x00, mode)
 
         # Starting manual increment (cmd2 0x00=up, 0x01=down)
         elif cmd == 0x17:
@@ -439,13 +482,16 @@ class Dimmer(Base):
         # state and emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("Dimmer %s ACK: %s", self.addr, msg)
-            self._set_level(msg.cmd2)
+            _is_on, mode = on_off.Mode.decode(msg.cmd1)
+            self._set_level(msg.cmd2, mode)
             on_done(True, "Dimmer state updated to %s" % self._level,
                     msg.cmd2)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("Dimmer %s NAK error: %s", self.addr, msg)
-            on_done(False, "Dimmer state update failed", None)
+            LOG.error("Dimmer %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Dimmer state update failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_scene(self, msg, on_done):
@@ -466,8 +512,10 @@ class Dimmer(Base):
             on_done(True, "Scene triggered", None)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("Dimmer %s NAK error: %s", self.addr, msg)
-            on_done(False, "Scene trigger failed failed", None)
+            LOG.error("Dimmer %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Scene trigger failed failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_increment(self, msg, on_done, delta):
@@ -487,8 +535,10 @@ class Dimmer(Base):
             on_done(True, s, msg.cmd2)
 
         elif msg.flags.Dimmer == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("Dimmer %s NAK error: %s", self.addr, msg)
-            on_done(False, "Dimmer %s state update failed", None)
+            LOG.error("Dimmer %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Dimmer %s state update failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_group_cmd(self, addr, group, cmd):
@@ -512,21 +562,19 @@ class Dimmer(Base):
                       group, addr)
             return
 
-        # 0x11: on, 0x12: on fast
-        if cmd in Dimmer.on_codes:
-            self._set_level(entry.data[0])
-
-        # 0x13: off, 0x14: off fast
-        elif cmd in Dimmer.off_codes:
-            self._set_level(0x00)
+        # Handle on/off codes
+        if on_off.Mode.is_valid(cmd):
+            is_on, mode = on_off.Mode.decode(cmd)
+            level = entry.data[0] if is_on else 0x00
+            self._set_level(level, mode)
 
         # Increment up (32 steps)
         elif cmd == 0x15:
-            self._set_level(max(0xff, self._level + 8))
+            self._set_level(min(0xff, self._level + 8))
 
         # Increment down
         elif cmd == 0x16:
-            self._set_level(min(0x00, self._level - 8))
+            self._set_level(max(0x00, self._level - 8))
 
         # Starting manual increment (cmd2 0x00=up, 0x01=down)
         elif cmd == 0x17:
@@ -541,7 +589,7 @@ class Dimmer(Base):
             LOG.warning("Dimmer %s unknown group cmd %#04x", self.addr, cmd)
 
     #-----------------------------------------------------------------------
-    def _set_level(self, level):
+    def _set_level(self, level, mode=on_off.Mode.NORMAL):
         """Set the device level state.
 
         This will change the internal state and emit the state changed
@@ -550,9 +598,9 @@ class Dimmer(Base):
         Args:
           level:   (int) 0x00 for off, 0xff for 100%.
         """
-        LOG.info("Setting device %s on=%s", self.label, level)
+        LOG.info("Setting device %s on=%s %s", self.label, level, mode)
         self._level = level
 
-        self.signal_level_changed.emit(self, level)
+        self.signal_level_changed.emit(self, level, mode)
 
     #-----------------------------------------------------------------------

@@ -5,6 +5,7 @@
 #===========================================================================
 import time
 from .. import log
+from .. import message as Msg
 from .. import util
 
 LOG = log.get_logger()
@@ -114,6 +115,12 @@ class Base:
         LOG.warning("Handler timed out %s of %s sent: %s",
                     self._num_sent, self._num_retry, self._msg)
 
+        # Increase the hop count if we can.
+        if isinstance(self._msg, Msg.OutStandard):  # also handles OutExtended
+            num_hops = max(3, self._msg.flags.max_hops)
+            LOG.debug("Increasing max_hops to %d", num_hops)
+            self._msg.flags.set_hops(num_hops)
+
         # Otherwise we should try and resend the message with ourselves as
         # the handler again so we don't lose the count.
         protocol.send(self._msg, self)
@@ -154,5 +161,9 @@ class Base:
           protocol:  (Protocol) The Insteon Protocol object.
         """
         self.on_done(False, "Command timed out", None)
+
+    #-----------------------------------------------------------------------
+    def __str__(self):
+        return "%s handler" % type(self).__name__
 
     #-----------------------------------------------------------------------

@@ -10,6 +10,7 @@ import insteon_mqtt.message as Msg
 class Test_ModemDbGet:
     def test_acks(self):
         calls = []
+
         def callback(success, msg, done):
             calls.append(msg)
 
@@ -37,6 +38,7 @@ class Test_ModemDbGet:
     #-----------------------------------------------------------------------
     def test_recs(self):
         calls = []
+
         def callback(success, msg, done):
             calls.append(msg)
 
@@ -62,9 +64,10 @@ class Test_ModemDbGet:
 
 
 class MockProtocol:
-    def send(self, msg, handler):
+    def send(self, msg, handler, high_priority=False, after=None):
         self.sent = msg
         self.handler = handler
+
 
 class Mockdb:
     def save(self):

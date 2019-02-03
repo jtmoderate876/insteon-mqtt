@@ -5,6 +5,7 @@
 #===========================================================================
 import json
 import os.path
+from .MsgHistory import MsgHistory
 from ..Address import Address
 from ..CommandSeq import CommandSeq
 from .. import db
@@ -43,7 +44,8 @@ class Base:
             if isinstance(config, dict):
                 assert len(config) == 1
                 addr, name = next(iter(config.items()))
-                name = name.lower()
+                if name:
+                    name = name.lower()
 
             # Otherwise it's just the address
             else:
@@ -76,6 +78,10 @@ class Base:
         self.addr = Address(address)
         self.name = name
 
+        # Moving window history of messages that are received from the
+        # device.  Used for optimal hop computations.
+        self.history = MsgHistory()
+
         # Make some nice labels to make logging easier.
         self.label = str(self.addr)
         if self.name:
@@ -97,9 +103,11 @@ class Base:
             'print_db' : self.print_db,
             'refresh' : self.refresh,
             'linking' : self.linking,
+            'join': self.join,
             'pair' : self.pair,
             'get_flags' : self.get_flags,
-            'get_engine' : self.get_engine
+            'get_engine' : self.get_engine,
+            'get_model' : self.get_model
             }
 
         # Device database delta.  The delta tells us if the database
@@ -112,7 +120,47 @@ class Base:
     def type(self):
         """Return a nice class name for the device.
         """
-        return self.__class__.__name__
+        if hasattr(self, "type_name"):
+            return getattr(self, "type_name")
+
+        return self.__class__.__name__.lower()
+
+    #-----------------------------------------------------------------------
+    def info_entry(self):
+        """Return a JSON dictionary containing information about the device.
+        """
+        return {str(self.addr) : {
+            "type" : self.type(),
+            "label" : self.name,
+            }}
+
+    #-----------------------------------------------------------------------
+    def send(self, msg, msg_handler, high_priority=False, after=None):
+        """Send a message to the device.
+
+        This will use the history of messages received from the device to set
+        the number of hops to use in the message.
+
+        Args:
+          msg:            Output message to write.  This should be an
+                          instance of a message in the message directory that
+                          that starts with 'Out'.
+          msg_handler:    Message handler instance to use when replies to the
+                          message are received.  Any message received after we
+                          write out the msg are passed to this handler until
+                          the handler returns the message.FINISHED flags.
+          high_priority:  (bool)False to add the message at the end of the
+                          queue.  True to insert this message at the start of
+                          the queue.
+          after:          (float) Unix clock time tag to send the message
+                          after. If None, the message is sent as soon as
+                          possible.  Exact time is not guaranteed - the
+                          message will be send no earlier than this.
+        """
+        if isinstance(msg, Msg.OutStandard):  # handles OutExtended as well
+            msg.flags.set_hops(self.history.avg_hops())
+
+        self.protocol.send(msg, msg_handler, high_priority, after)
 
     #-----------------------------------------------------------------------
     def db_path(self):
@@ -164,6 +212,61 @@ class Base:
         on_done(True, "Complete", None)
 
     #-----------------------------------------------------------------------
+    def join(self, on_done=None):
+        """Joins the Device to the Modem, Enabling Communication
+
+        Creates the Modem->Device Link that is Necessary for I2CS Devices.
+
+        I2CS devices (Nearly all Insteon devices made since ~2012) will not
+        respond to most messages sent to them unless they have a responder
+        entry in their db for the device communicating with them.  Older
+        devices that use I1 or I2 protocols do not have this limitation.
+
+        This command can be run on any device version.  It will first check
+        the engine version and then perform any steps necessary after that
+        using the join_seq function.
+        """
+        LOG.info("Join Device %s", self.addr)
+
+        # Using a sequence so we can pass the on_done function through.
+        seq = CommandSeq(self.protocol, "Operation Complete", on_done)
+
+        # Get Engine Version.  This process only works and is necessary on
+        # I2CS devices.
+        seq.add(self.get_engine)
+
+        # Then run join_seq which checks to see if anything further is needed
+        seq.add(self.join_seq)
+
+        seq.run()
+
+    #-----------------------------------------------------------------------
+    def join_seq(self, on_done=None):
+        """Join Sequence Called By Join Command
+
+        This command is only required for I2CS devices.  This function is
+        called after get_engine and will only perform a link sequence if
+        the engine version requires it.
+        """
+        if self.db.engine < 0x02:
+            on_done = util.make_callback(on_done)
+            LOG.info("Device %s is not I2CS, join is unnecessary.", self.addr)
+            on_done(True, "Operation Complete.", None)
+            return
+        else:
+            # Build a sequence of calls to do the link.
+            seq = CommandSeq(self.protocol, "Operation Complete", on_done)
+
+            # Put Modem in linking mode first
+            seq.add(self.modem.linking)
+
+            # Now put this device in linking mode
+            seq.add(self.linking)
+
+            # Finally start the sequence running.
+            seq.run()
+
+    #-----------------------------------------------------------------------
     def linking(self, group=0x01, on_done=None):
         """TODO: doc
         """
@@ -174,7 +277,7 @@ class Base:
         msg = Msg.OutExtended.direct(self.addr, 0x09, group,
                                      bytes([0x00] * 14))
         msg_handler = handler.StandardCmd(msg, self.handle_linking, on_done)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
         # NOTE: this command is to enter linking mode - we get ACK back that
         # it did, but unlike the modem, we don't get a message telling us
@@ -210,10 +313,15 @@ class Base:
 
         Args:
           force:    If true, will force a refresh of the device
-                    database even if the delta value matches
+                    database even if the delta value matches as well as
+                    a requery of the device model information even if it
+                    is already known.
           on_done:  Optional callback run when the commands are finished.
         """
         LOG.info("Device %s cmd: status refresh", self.label)
+
+        # Use a sequence
+        seq = CommandSeq(self.protocol, "Device refreshed", on_done)
 
         # This sends a refresh ping which will respond w/ the current
         # database delta field.  The handler checks that against the
@@ -221,8 +329,18 @@ class Base:
         # download command to the device to update the database.
         msg = Msg.OutStandard.direct(self.addr, 0x19, 0x00)
         msg_handler = handler.DeviceRefresh(self, self.handle_refresh, force,
-                                            on_done, num_retry=3)
-        self.protocol.send(msg, msg_handler)
+                                            None, num_retry=3)
+        seq.add_msg(msg, msg_handler)
+
+        # If model number is not known, or force true, run get_model
+        if (self.db.dev_cat is None or
+            self.db.sub_cat is None or
+            self.db.firmware is None or
+            force):
+            seq.add(self.get_model)
+
+        # Alright run it all
+        seq.run()
 
     #-----------------------------------------------------------------------
     def get_flags(self, on_done=None):
@@ -236,7 +354,7 @@ class Base:
         # download command to the device to update the database.
         msg = Msg.OutStandard.direct(self.addr, 0x1f, 0x00)
         msg_handler = handler.StandardCmd(msg, self.handle_flags, on_done)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def get_engine(self, on_done=None):
@@ -251,7 +369,20 @@ class Base:
         # Send the get_engine_version request.
         msg = Msg.OutStandard.direct(self.addr, 0x0D, 0x00)
         msg_handler = handler.StandardCmd(msg, self.handle_engine, on_done)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
+
+    #-----------------------------------------------------------------------
+    def get_model(self, on_done=None):
+        """ Request the model information (dev_cat, sub_cat, and firmware)
+        from the device
+        """
+        LOG.info("Device %s cmd: get engine version", self.label)
+
+        # Send the get_engine_version request.
+        msg = Msg.OutStandard.direct(self.addr, 0x10, 0x00)
+        msg_handler = handler.BroadcastCmdResponse(msg, self.handle_model,
+                                                   on_done)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def db_add_ctrl_of(self, local_group, remote_addr, remote_group,
@@ -417,6 +548,25 @@ class Base:
                           "%s with args: %s", self.label, cmd, str(kwargs))
 
     #-----------------------------------------------------------------------
+    def handle_received(self, msg):
+        """Receives incomming message notifications from protocol
+
+        This is called for every standard and extended message that is read
+        from the modem from this device.  This is only used to track the hop
+        distance from the modem to each device and isn't used for general
+        message handling.
+
+        It extracts the number of hops that occurred and uses that to create
+        a moving average of the distance to the device so that outbound
+        messages can set the maximum hop value for the most efficient
+        transfers.
+
+        Args:
+          msg:    (Msg.InpStandard, Msg.InpExtended) The message that arrived.
+        """
+        self.history.add(msg)
+
+    #-----------------------------------------------------------------------
     def handle_refresh(self, msg):
         """Handle replies to the refresh command.
 
@@ -450,12 +600,44 @@ class Base:
           msg:  (message.InpStandard) The engine message reply.  The engine
                 version state is in the msg.cmd2 field.
         """
-        self.db.set_engine(msg.cmd2)
+        ver_num = 0x00
+        if msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
+            # If we get a NAK it is almost certainly because this is an I2CS
+            # device that lacks a responder link.
+            ver_num = 0x02
+            LOG.debug("Device %s sent NAK to get engine: %s", self.addr,
+                      msg.cmd2)
+        else:
+            ver_num = msg.cmd2
+
+        self.db.set_engine(ver_num)
 
         labels = {0 : "i1", 1 : "i2", 2 : "i2c"}
-        version = labels.get(msg.cmd2, "Unknown")
+        version = labels.get(msg.cmd2, "Unknown, using I2CS")
         LOG.ui("Device %s engine version: %s", self.addr, version)
         on_done(True, "Operation complete", msg.cmd2)
+
+    #-----------------------------------------------------------------------
+    def handle_model(self, msg, on_done):
+        """Handle the broadcast reply to the get model command.
+
+        The to address of the broadcast reply contains the dev_cat, sub_cat,
+        and firmware
+
+        Args:
+          msg:  (message.InpStandard) The id request broadcast response.
+        """
+        if msg.cmd1 == 0x01:
+            self.db.set_dev_cat(msg.to_addr.ids[0])
+            self.db.set_sub_cat(msg.to_addr.ids[1])
+            self.db.set_firmware(msg.to_addr.ids[2])
+            LOG.ui("Device %s received model information, dev_cat: %#x, " +
+                   "sub_cat: %#x, firmware: %#x ", self.addr, self.db.dev_cat,
+                   self.db.sub_cat, self.db.firmware)
+            on_done(True, "Operation complete", None)
+        else:
+            LOG.debug("Device %s get_model response with wrong cmd %s",
+                      self.addr, msg.cmd1)
 
     #-----------------------------------------------------------------------
     def handle_broadcast(self, msg):
@@ -555,7 +737,7 @@ class Base:
             db_group = remote_group
 
         # Create a new database entry for the device and send it.
-        seq.add(self.db.add_on_device, self.protocol, remote_addr, db_group,
+        seq.add(self.db.add_on_device, self, remote_addr, db_group,
                 is_controller, local_data)
 
         # For two way commands, insert a callback so that when the modem
@@ -606,7 +788,7 @@ class Base:
         if refresh:
             seq.add(self.refresh)
 
-        seq.add(self.db.delete_on_device, self.protocol, entry)
+        seq.add(self.db.delete_on_device, self, entry)
 
         # For two way commands, insert a callback so that when the modem
         # command finishes, it will send the next command to the device.

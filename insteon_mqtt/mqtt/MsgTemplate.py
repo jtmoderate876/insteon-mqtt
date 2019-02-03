@@ -49,10 +49,10 @@ class MsgTemplate:
 
         # Keep the original string around for better log and error messages.
         self.topic_str = topic
-        self.topic = jinja2.Template(topic)
+        self.topic = None if topic is None else jinja2.Template(topic)
 
         self.payload_str = payload
-        self.payload = jinja2.Template(payload)
+        self.payload = None if payload is None else jinja2.Template(payload)
 
     #-----------------------------------------------------------------------
     def load_config(self, config, topic, payload, qos=None):
@@ -82,30 +82,32 @@ class MsgTemplate:
             self.payload = jinja2.Template(template)
 
     #-----------------------------------------------------------------------
-    def render_topic(self, data):
+    def render_topic(self, data, silent=False):
         """Render the topic template.
 
         Args:
           data:   Data dictionary with template variables to pass to the
                   jinja template.
+          silent: (bool) True to silence error logs.
 
         Returns:
           (str) Returns the rendered topic.
         """
-        return self._render(self.topic_str, self.topic, data)
+        return self._render(self.topic_str, self.topic, data, silent)
 
     #-----------------------------------------------------------------------
-    def render_payload(self, data):
+    def render_payload(self, data, silent=False):
         """Render the payload template.
 
         Args:
           data:   Data dictionary with template variables to pass to the
                   jinja template.
+          silent: (bool) True to silence error logs.
 
         Returns:
           (str) Returns the rendered payload.
         """
-        return self._render(self.payload_str, self.payload, data)
+        return self._render(self.payload_str, self.payload, data, silent)
 
     #-----------------------------------------------------------------------
     def publish(self, mqtt, data):
@@ -124,7 +126,7 @@ class MsgTemplate:
             mqtt.publish(topic, payload, self.qos)
 
     #-----------------------------------------------------------------------
-    def to_json(self, payload):
+    def to_json(self, payload, silent=False):
         """Convert an MQTT payload to a JSON data.
 
         The payload template can only have 'value' and 'json' variables.  The
@@ -134,6 +136,7 @@ class MsgTemplate:
 
         Args:
           payload:  (str) The input MQTT payload
+          silent:   (bool) True to silence error logs.
 
         Returns:
           (dict) Returns the parsed JSON dictionary or None if parsing fails.
@@ -153,10 +156,11 @@ class MsgTemplate:
             pass
 
         # Use the input to convert the payload to a JSON string.
-        value = self.render_payload(data)
-        LOG.debug("Input template render: '%s'", value)
+        value = self.render_payload(data, silent)
+        if not silent:
+            LOG.debug("Input template render: '%s'", value)
         if value is None:
-            return
+            return None
 
         try:
             return json.loads(value)
@@ -166,22 +170,27 @@ class MsgTemplate:
             return None
 
     #-----------------------------------------------------------------------
-    def _render(self, raw, template, data):
+    def _render(self, raw, template, data, silent=False):
         """Render a template and return None if it Fails.
 
         Args:
           raw       Raw template string - used in logging errors.
           template  The template object to use.
           data      The data to pass to the template.
+          silent:   (bool) True to silence error logs.
 
         Returns:
           Returns the rendered value or None if if fails.
         """
+        if template is None:
+            return None
+
         try:
             return template.render(data)
         except:
-            LOG.exception("Error rendering template '%s' with data: %s",
-                          raw, data)
+            if not silent:
+                LOG.exception("Error rendering template '%s' with data: %s",
+                              raw, data)
             return None
 
     #-----------------------------------------------------------------------

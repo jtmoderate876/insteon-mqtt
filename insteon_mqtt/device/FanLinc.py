@@ -17,6 +17,7 @@ LOG = log.get_logger()
 class FanLinc(Dimmer):
     """TODO: doc
     """
+    type_name = "fan_linc"
 
     class Speed(enum.IntEnum):
         OFF = 0x00
@@ -139,7 +140,7 @@ class FanLinc(Dimmer):
                                           on_done, num_retry=3)
 
         # Send the message to the PLM modem for protocol.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def fan_off(self, on_done=None):
@@ -165,7 +166,7 @@ class FanLinc(Dimmer):
                                           on_done)
 
         # Send the message to the PLM modem for protocol.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def fan_set(self, speed, on_done=None):
@@ -179,8 +180,6 @@ class FanLinc(Dimmer):
           level:    (int/bool) If non zero, turn the device on.  Should be
                     in the range 0x00 to 0xff.  If True, the level will be
                     0xff.
-          instant:  (bool) False for a normal ramping change, True for an
-                    instant change.
         """
         assert isinstance(speed, FanLinc.Speed)
 
@@ -254,9 +253,11 @@ class FanLinc(Dimmer):
                 on_done(True, s, msg.cmd2)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("FanLinc fan %s NAK error: %s", self.addr, msg)
+            LOG.error("FanLinc fan %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
             if on_done:
-                on_done(False, "Fan %s state update failed", None)
+                on_done(False, "Fan %s state update failed. " + msg.nak_str(),
+                        None)
 
     #-----------------------------------------------------------------------
     def handle_group_cmd(self, addr, group, cmd):

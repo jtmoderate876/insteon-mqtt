@@ -116,6 +116,8 @@ class IOLinc(Base):
     state to show the door open or closed.
 
     """
+    type_name = "io_linc"
+
     def __init__(self, protocol, modem, address, name=None):
         """Constructor
 
@@ -273,7 +275,7 @@ class IOLinc(Base):
         # download command to the device to update the database.
         msg = Msg.OutStandard.direct(self.addr, 0x20, bits)
         msg_handler = handler.StandardCmd(msg, self.handle_flags)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def refresh(self, force=False, on_done=None):
@@ -302,7 +304,7 @@ class IOLinc(Base):
         msg = Msg.OutStandard.direct(self.addr, 0x19, 0x01)
         msg_handler = handler.DeviceRefresh(self, self.handle_refresh, force,
                                             on_done, num_retry=3)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def is_on(self):
@@ -328,7 +330,7 @@ class IOLinc(Base):
         msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
         # Send the message to the PLM modem.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def off(self, group=0x01, instant=False, on_done=None):
@@ -350,7 +352,7 @@ class IOLinc(Base):
         msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
         # Send the message to the PLM modem.
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def set(self, level, group=0x01, instant=False, on_done=None):
@@ -517,8 +519,9 @@ class IOLinc(Base):
             on_done(True, "IOLinc command complete", None)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("IOLinc %s NAK error: %s", self.addr, msg)
-            on_done(False, "IOLinc command failed", None)
+            LOG.error("IOLinc %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "IOLinc command failed. " + msg.nak_str(), None)
 
     #-----------------------------------------------------------------------
     def handle_scene(self, msg, on_done):
@@ -539,8 +542,10 @@ class IOLinc(Base):
             on_done(True, "Scene triggered", None)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("IOLinc %s NAK error: %s", self.addr, msg)
-            on_done(False, "Scene trigger failed failed", None)
+            LOG.error("IOLinc %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Scene trigger failed failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_group_cmd(self, addr, group, cmd):

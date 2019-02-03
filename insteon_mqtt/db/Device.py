@@ -14,6 +14,7 @@ from .DeviceEntry import DeviceEntry
 from .. import log
 from .. import message as Msg
 from .. import util
+from .DeviceModifyManagerI1 import DeviceModifyManagerI1
 
 LOG = log.get_logger()
 
@@ -58,6 +59,10 @@ class Device:
         # Extract the various files from the JSON data.
         obj.delta = data['delta']
         obj.engine = data.get('engine', None)
+        obj.dev_cat = data.get('dev_cat', None)
+        obj.sub_cat = data.get('sub_cat', None)
+        obj.firmware = data.get('firmware', None)
+        obj._meta = data.get('meta', {})
 
         for d in data['used']:
             obj.add_entry(DeviceEntry.from_json(d), save=False)
@@ -103,6 +108,15 @@ class Device:
         # relatively new devices (engine 2) but we'll leave it set as None
         # here to show that we haven't checked the engine version yet.
         self.engine = None
+
+        # Device model information
+        self.dev_cat = None
+        self.sub_cat = None
+        self.firmware = None
+
+        # Metadata storage.  Used for saving device data to persistent
+        # storage for access across reboots
+        self._meta = {}
 
         # Map of memory address (int) to DeviceEntry objects that are active
         # and in use.
@@ -175,6 +189,130 @@ class Device:
             self.save()
 
     #-----------------------------------------------------------------------
+    def set_dev_cat(self, dev_cat):
+        """Saves the device category to file.
+
+        Insteon devices are each assigned to a broad device category.  The
+        known device categories include:
+            0x00 Generalized Controllers ControLinc, RemoteLinc, SignaLinc,
+                 etc.
+            0x01 Dimmable Lighting Control Dimmable Light Switches, Dimmable
+                 Plug-In Modules
+            0x02 Switched Lighting Control Relay Switches, Relay Plug-In
+                 Modules
+            0x03 Network Bridges PowerLinc Controllers, TRex, Lonworks,
+                 ZigBee, etc.
+            0x04 Irrigation Control Irrigation Management, Sprinkler
+                 Controllers
+            0x05 Climate Control Heating, Air conditioning, Exhausts Fans,
+                 Ceiling Fans, Indoor Air Quality
+            0x06 Pool and Spa Control Pumps, Heaters, Chemicals
+            0x07 Sensors and Actuators Sensors, Contact Closures
+            0x08 Home Entertainment Audio/Video Equipment
+            0x09 Energy Management Electricity, Water, Gas Consumption,
+                 Leak Monitors
+            0x0A Built-In Appliance Control White Goods, Brown Goods
+            0x0B Plumbing Faucets, Showers, Toilets
+            0x0C Communication Telephone System Controls, Intercoms
+            0x0D Computer Control PC On/Off, UPS Control, App Activation,
+                 Remote Mouse, Keyboards
+            0x0E Window Coverings Drapes, Blinds, Awnings
+            0x0F Access Control Automatic Doors, Gates, Windows, Locks
+            0x10 Security, Health, Safety Door and Window Sensors, Motion
+                 Sensors, Scales
+            0x11 Surveillance Video Camera Control, Time-lapse Recorders,
+                 Security System Links
+            0x12 Automotive Remote Starters, Car Alarms, Car Door Locks
+            0x13 Pet Care Pet Feeders, Trackers
+            0x14 Toys Model Trains, Robots
+            0x15 Timekeeping Clocks, Alarms, Timers
+            0x16 Holiday Christmas Lights, Displays
+
+        Args:
+          dev_cat:  (int) The device category.  None to clear the value.
+        """
+        self.dev_cat = dev_cat
+        if dev_cat is not None:
+            self.save()
+
+    #-----------------------------------------------------------------------
+    def set_sub_cat(self, sub_cat):
+        """Saves the device sub-category to file.
+
+        Within the broad device category, insteon devices are assigned to a
+        more narrow sub category.  Generally a sub-category remains consistent
+        throughout a single model number of a a product, however not always.
+        Smart Labs has done a poor job of publishing the details of the
+        sub-categories.  Some resources for determining the details of a
+        sub-category are:
+
+        http://cache.insteon.com/pdf/INSTEON_DevCats_and_Product_Keys_20081008.pdf
+        http://madreporite.com/insteon/Insteon_device_list.htm
+
+        Generally knowing the Dev_Cat and Sub_Cat is sufficient for determining
+        the features that are available on a device.  Additionally knowing the
+        engine version of the device is also another good indicator.
+
+        Args:
+          sub_cat:  (int) The device sub-category.  None to clear the value.
+        """
+        self.sub_cat = sub_cat
+        if sub_cat is not None:
+            self.save()
+
+    #-----------------------------------------------------------------------
+    def set_firmware(self, firmware):
+        """Saves the firmware of the device to file.
+
+        The firmware version of a device is just that, the version number of
+        the embedded code on the device.  In theory, this firmware is
+        updatable (although not by a casual user), however Smart Labs has never
+        published an update for any device.
+
+        That said, it does seem that Smart Labs routinely updates the firmware
+        that is installed on devices before they are sold.  However, Smart Labs
+        does not publish changelogs, nor does it discuss what changes have been
+        made.
+
+        Based on anecdotal evidence, few if any changes in firmware have added
+        any features to a device.  Generally knowing the Dev_Cat and Sub_Cat
+        is sufficient for determining the features that are available on a
+        device.
+
+        Args:
+          sub_cat:  (int) The device sub-category.  None to clear the value.
+        """
+        self.firmware = firmware
+        if firmware is not None:
+            self.save()
+
+    #-----------------------------------------------------------------------
+    def set_meta(self, key, value):
+        """Set the metadata key to value.
+
+        Used for saving device parameters to persistent storage between
+        reboots.
+
+        Args:
+          key:    A valid python dictionary key to store the value
+          value:  A data type capable of being represented in json
+        """
+        self._meta[key] = value
+        self.save()
+
+    #-----------------------------------------------------------------------
+    def get_meta(self, key):
+        """Get the metadata key value.
+
+        Used for getting device parameters from persistent storage between
+        reboots.
+
+        Args:
+          key:    A valid python dictionary key to retreive the value from
+        """
+        return self._meta.get(key, None)
+
+    #-----------------------------------------------------------------------
     def clear(self):
         """Clear the complete database of entries.
 
@@ -219,7 +357,7 @@ class Device:
         return len(self.entries)
 
     #-----------------------------------------------------------------------
-    def add_on_device(self, protocol, addr, group, is_controller, data,
+    def add_on_device(self, device, addr, group, is_controller, data,
                       on_done=None):
         """Add an entry and push the entry to the Insteon device.
 
@@ -237,7 +375,7 @@ class Device:
            on_done( success, message, DeviceEntry )
 
         Args:
-          protocol:      (Protocol) The Insteon protocol object to use for
+          device:        (device.Base) The Insteon device object to use for
                          sending messages.
           addr:          (Address) The address of the device in the database.
           group:         (int) The group the entry is for.
@@ -279,7 +417,7 @@ class Device:
         # those memory addresses and just update them w/ the correct
         # information and mark them as used.
         if add_unused:
-            self._add_using_unused(protocol, addr, group, is_controller, data,
+            self._add_using_unused(device, addr, group, is_controller, data,
                                    on_done, entry)
 
         # If there no unused entries, we need to append one.  Write a new
@@ -289,11 +427,11 @@ class Device:
         # last entry anymore.  This order is important since if either
         # operation fails, the db is still in a valid order.
         else:
-            self._add_using_new(protocol, addr, group, is_controller, data,
+            self._add_using_new(device, addr, group, is_controller, data,
                                 on_done)
 
     #-----------------------------------------------------------------------
-    def delete_on_device(self, protocol, entry, on_done=None):
+    def delete_on_device(self, device, entry, on_done=None):
         """Delete an entry on the Insteon device.
 
         This sends the deletes the input record from the Insteon device.  If
@@ -310,7 +448,7 @@ class Device:
            on_done( success, message, DeviceEntry )
 
         Args:
-          protocol:      (Protocol) The Insteon protocol object to use for
+          device:        (device.Base) The Insteon device object to use for
                          sending messages.
           entry:         (DeviceEntry) The entry to remove.
           on_done:       Optional callback which will be called when the
@@ -323,15 +461,22 @@ class Device:
         new_entry = entry.copy()
         new_entry.db_flags.in_use = False
 
-        # Build the extended db modification message.  This says to modify
-        # the entry in place w/ the new db flags which say this record is no
-        # longer in use.
-        ext_data = new_entry.to_bytes()
-        msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
-        msg_handler = handler.DeviceDbModify(self, new_entry, on_done)
+        if self.engine == 0:
+            i1_entry = new_entry.to_i1_bytes()
+            modify_manager = DeviceModifyManagerI1(device, self,
+                                                   i1_entry, on_done=on_done,
+                                                   num_retry=3)
+            modify_manager.start_modify()
+        else:
+            # Build the extended db modification message.  This says to
+            # modify the entry in place w/ the new db flags which say this
+            # record is no longer in use.
+            ext_data = new_entry.to_bytes()
+            msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
+            msg_handler = handler.DeviceDbModify(self, new_entry, on_done)
 
-        # Send the message.
-        protocol.send(msg, msg_handler)
+            # Send the message.
+            device.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def find_group(self, group):
@@ -430,9 +575,13 @@ class Device:
             'address' : self.addr.to_json(),
             'delta' : self.delta,
             'engine' : self.engine,
+            'dev_cat' : self.dev_cat,
+            'sub_cat' : self.sub_cat,
+            'firmware' : self.firmware,
             'used' : used,
             'unused' : unused,
             'last' : self.last.to_json(),
+            'meta' : self._meta
             }
 
     #-----------------------------------------------------------------------
@@ -475,8 +624,10 @@ class Device:
         if entry.db_flags.in_use:
             # NOTE: this relies on no-one keeping a handle to this entry
             # outside of this class.  This also handles duplicate messages
-            # since they will have the same memory location key.
+            # since they will have the same memory location key.  Pop this
+            # address off unused to insure both dicts stay in sync.
             self.entries[entry.mem_loc] = entry
+            self.unused.pop(entry.mem_loc, None)
 
             # If we're the controller for this entry, add it to the list of
             # entries for that group.
@@ -493,8 +644,10 @@ class Device:
         else:
             # NOTE: this relies on no one keeping a handle to this entry
             # outside of this class.  This also handles duplicate messages
-            # since they will have the same memory location key.
+            # since they will have the same memory location key.  Pop this
+            # address off entries to insure both dicts stay in sync.
             self.unused[entry.mem_loc] = entry
+            self.entries.pop(entry.mem_loc, None)
 
             # If the entry is a controller and it's in the group dict, erase
             # it from the group map.
@@ -510,7 +663,7 @@ class Device:
             self.save()
 
     #-----------------------------------------------------------------------
-    def _add_using_unused(self, protocol, addr, group, is_controller, data,
+    def _add_using_unused(self, device, addr, group, is_controller, data,
                           on_done, entry=None):
         """Add an entry using an existing, unused entry.
 
@@ -526,17 +679,24 @@ class Device:
         # Update it w/ the new information.
         entry.update_from(addr, group, is_controller, data)
 
-        # Build the extended db modification message.  This says to update
-        # the record at the entry memory location.
-        ext_data = entry.to_bytes()
-        msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
-        msg_handler = handler.DeviceDbModify(self, entry, on_done)
+        if self.engine == 0:
+            i1_entry = entry.to_i1_bytes()
+            modify_manager = DeviceModifyManagerI1(device, self,
+                                                   i1_entry, on_done=on_done,
+                                                   num_retry=3)
+            modify_manager.start_modify()
+        else:
+            # Build the extended db modification message.  This says to update
+            # the record at the entry memory location.
+            ext_data = entry.to_bytes()
+            msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
+            msg_handler = handler.DeviceDbModify(self, entry, on_done)
 
-        # Send the message and handler.
-        protocol.send(msg, msg_handler)
+            # Send the message and handler.
+            device.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def _add_using_new(self, protocol, addr, group, is_controller, data,
+    def _add_using_new(self, device, addr, group, is_controller, data,
                        on_done):
         """Add a anew entry at the end of the database.
 
@@ -552,7 +712,7 @@ class Device:
         LOG.info("Device %s appending new record at mem %#06x", self.addr,
                  self.last.mem_loc)
 
-        seq = CommandSeq(protocol, "Device database update complete", on_done)
+        seq = CommandSeq(device, "Device database update complete", on_done)
 
         # Shift the current last record down 8 bytes.  Make a copy - we'll
         # only update our member var if the write works.
@@ -561,21 +721,37 @@ class Device:
 
         # Start by writing the last record - that way if it fails, we don't
         # try and update w/ the new data record.
-        ext_data = last.to_bytes()
-        msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
-        msg_handler = handler.DeviceDbModify(self, last)
-        seq.add_msg(msg, msg_handler)
+        if self.engine == 0:
+            i1_entry = last.to_i1_bytes()
+            # on_done is passed by the sequence manager inside seq.add()
+            modify_manager = DeviceModifyManagerI1(device, self,
+                                                   i1_entry, on_done=None,
+                                                   num_retry=3)
+            seq.add(modify_manager.start_modify)
+        else:
+            ext_data = last.to_bytes()
+            msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
+            msg_handler = handler.DeviceDbModify(self, last)
+            seq.add_msg(msg, msg_handler)
 
         # Create the new entry at the current last memory location.
         db_flags = Msg.DbFlags(in_use=True, is_controller=is_controller,
                                is_last_rec=False)
         entry = DeviceEntry(addr, group, self.last.mem_loc, db_flags, data)
 
-        # Add the call to update the data record.
-        ext_data = entry.to_bytes()
-        msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
-        msg_handler = handler.DeviceDbModify(self, entry)
-        seq.add_msg(msg, msg_handler)
+        if self.engine == 0:
+            i1_entry = entry.to_i1_bytes()
+            # on_done is passed by the sequence manager inside seq.add()
+            modify_manager = DeviceModifyManagerI1(device, self,
+                                                   i1_entry, on_done=None,
+                                                   num_retry=3)
+            seq.add(modify_manager.start_modify)
+        else:
+            # Add the call to update the data record.
+            ext_data = entry.to_bytes()
+            msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00, ext_data)
+            msg_handler = handler.DeviceDbModify(self, entry)
+            seq.add_msg(msg, msg_handler)
 
         seq.run()
 

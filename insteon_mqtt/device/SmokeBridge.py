@@ -40,6 +40,7 @@ class SmokeBridge(Base):
             - smoke_bridge:
               address: 44.a3.79
     """
+    type_name = "smoke_bridge"
 
     # broadcast group ID alert description
     class Type(enum.IntEnum):
@@ -127,7 +128,7 @@ class SmokeBridge(Base):
         msg = Msg.OutStandard.direct(self.addr, 0x1f, 0x01)
         msg_handler = handler.DeviceRefresh(self, self.handle_refresh, force,
                                             on_done, num_retry=3)
-        self.protocol.send(msg, msg_handler)
+        self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
     def handle_broadcast(self, msg):

@@ -92,7 +92,17 @@ def bit_set(value, bit, is_one):
 
 #===========================================================================
 def resolve_data3(defaults, inputs):
-    """TODO: doc
+    """Turn a user input into a list of 3 bytes for link data.
+
+    The user input can be None (use defaults).  Or a list of 3 values.
+    If a value is -1, then the default for that value is used.
+
+    Args:
+      defaults:  (bytes[3]) Default values to use.
+      inputs:    User input.
+
+    Returns:
+      (bytes[3]) Returns a 3 byte list to use as the insteon link data.
     """
     values = []
 
@@ -107,8 +117,22 @@ def resolve_data3(defaults, inputs):
 
 #===========================================================================
 def input_choice(inputs, field, choices):
-    """TODO: doc
+    """Check a user input against a list of valid choices.
+
+    Errors:
+      If inputs[field] is not in the choices list, an exception is thrown.
+
+    Args:
+      inputs:   (dict) Key/value pairs of user input fields.
+      field:    (str) The field to check.
+      choices:  (list) Valid choices for the field.
+
+    Returns:
+      Returns the field from the input dict.  For strings, the valiue is
+      always converted to lower case.  If the field doesn't exist in inputs,
+      None is returned.
     """
+    # Extract the field and convert to lower case.
     value = inputs.pop(field, None)
     if value is None:
         return None
@@ -116,6 +140,7 @@ def input_choice(inputs, field, choices):
     if isinstance(value, str):
         value = value.lower()
 
+    # Check the value against the valid options for the field.
     if value not in choices:
         msg = "Invalid %s input.  Valid inputs are on of %s" % \
               (value, str(choices))
@@ -126,20 +151,34 @@ def input_choice(inputs, field, choices):
 
 #===========================================================================
 def input_bool(inputs, field):
-    """TODO: doc
+    """Convert an input field to a boolean.
+
+    Valid boolean inputs are 'true', 'false', 1, 0, True, or False.
+
+    Errors:
+      If the input is not a valid bool, an exception is thrown.
+
+    Args:
+      inputs:   (dict) Key/value pairs of user inputs.
+      field:    (str) The field to get.
+
+    Returns:
+      Returns None if field is not in inputs.  Otherwise the input field
+      is converted to a boolean and returned.
     """
     value = inputs.pop(field, None)
     if value is None:
         return None
 
-    lv = value.lower()
-    if lv == "true":
-        value = True
-    elif lv == "false":
-        value = False
+    if isinstance(value, str):
+        lv = value.lower()
+        if lv == "true":
+            value = True
+        elif lv == "false":
+            value = False
 
     try:
-        # Use int() because bool("asdf") also returns true.  This insures
+        # Use int() because bool("asdf") also returns true.  This ensures
         # only true/false or 1/0 is allowed.
         return bool(int(value))
     except ValueError:
@@ -149,14 +188,28 @@ def input_bool(inputs, field):
 
 #===========================================================================
 def input_byte(inputs, field):
-    """TODO: doc
+    """Convert an input field to a byte.
+
+    Valid byte inputs are integers or strings leading with '0x' (base
+    16 hex value).
+
+    Errors:
+      If the input is not a valid byte, an exception is thrown.
+
+    Args:
+      inputs:   (dict) Key/value pairs of user inputs.
+      field:    (str) The field to get.
+
+    Returns:
+      Returns None if field is not in inputs.  Otherwise the input field
+      is converted to a byte and returned.
     """
     value = inputs.pop(field, None)
     if value is None:
         return None
 
     try:
-        if '0x' in value:
+        if isinstance(value, str) and '0x' in value:
             v = int(value, 16)
         else:
             v = int(value)
