@@ -4,6 +4,7 @@
 #
 #===========================================================================
 from .. import log
+from .. import on_off
 from .MsgTemplate import MsgTemplate
 
 LOG = log.get_logger()
@@ -20,10 +21,13 @@ class Remote:
 
         self.msg_state = MsgTemplate(
             topic='insteon/{{address}}/state/{{button}}',
-            payload='{{on_str.lower()}}',
-            )
+            payload='{{on_str.lower()}}')
+
+        # Output manual state change is off by default.
+        self.msg_manual_state = MsgTemplate(None, None)
 
         device.signal_pressed.connect(self.handle_pressed)
+        device.signal_manual.connect(self.handle_manual)
 
     #-----------------------------------------------------------------------
     def load_config(self, config, qos=None):
@@ -39,6 +43,8 @@ class Remote:
             return
 
         self.msg_state.load_config(data, 'state_topic', 'state_payload', qos)
+        self.msg_manual_state.load_config(data, 'manual_state_topic',
+                                          'manual_state_payload', qos)
 
     #-----------------------------------------------------------------------
     def subscribe(self, link, qos):
@@ -60,7 +66,38 @@ class Remote:
         pass
 
     #-----------------------------------------------------------------------
-    def handle_pressed(self, device, button, is_active):
+    def template_data(self, button, is_on=None, mode=on_off.Mode.NORMAL):
+        """TODO: doc
+        """
+        # Set up the variables that can be used in the templates.
+        data = {
+            "address" : self.device.addr.hex,
+            "name" : self.device.name if self.device.name
+                     else self.device.addr.hex,
+            "button" : button,
+            }
+
+        if is_on is not None:
+            data["on"] = 1 if is_on else 0
+            data["on_str"] = "on" if is_on else "off"
+            data["mode"] = str(mode)
+            data["fast"] = 1 if mode == on_off.Mode.FAST else 0
+            data["instant"] = 1 if mode == on_off.Mode.INSTANT else 0
+
+        return data
+
+    #-----------------------------------------------------------------------
+    def manual_template_data(self, button, manual):
+        """TODO: doc
+        """
+        data = self.template_data(button)
+        data["manual_str"] = str(manual)
+        data["manual"] = manual.int_value()
+        data["manual_openhab"] = manual.openhab_value()
+        return data
+
+    #-----------------------------------------------------------------------
+    def handle_pressed(self, device, button, is_on, mode=on_off.Mode.NORMAL):
         """Device active button pressed callback.
 
         This is triggered via signal when the Insteon device button is
@@ -71,17 +108,28 @@ class Remote:
           device:   (device.Base) The Insteon device that changed.
           button:   (int) The button number 1...n that was pressed.
         """
-        LOG.info("MQTT received button press %s = btn %s", device.label,
-                 button)
+        LOG.info("MQTT received button press %s = btn %s on %s %s",
+                 device.label, button, is_on, mode)
 
-        data = {
-            "address" : device.addr.hex,
-            "name" : device.name if device.name else device.addr.hex,
-            "button" : button,
-            "on" : 1 if is_active else 0,
-            "on_str" : "on" if is_active else "off",
-            }
-
+        data = self.template_data(button, is_on, mode)
         self.msg_state.publish(self.mqtt, data)
+
+    #-----------------------------------------------------------------------
+    def handle_manual(self, device, group, manual):
+        """Device manual mode callback.
+
+        This is triggered via signal when the Insteon device goes
+        active or inactive.  It will publish an MQTT message with the
+        new state.
+
+        Args:
+          device:   (device.Base) The Insteon device that changed.
+          manual:   (on_off.Manual) The manual mode.
+        """
+        LOG.info("MQTT received manual button press %s = btn %s %s",
+                 device.label, group, manual)
+
+        data = self.manual_template_data(group, manual)
+        self.msg_manual_state.publish(self.mqtt, data)
 
     #-----------------------------------------------------------------------

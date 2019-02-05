@@ -1,13 +1,62 @@
 # Revision Change History
 
+## [0.6.5]
+
+### Fixes
+- Added better messages when the pair command fails because the modem db
+  is out of date ([Issue #69][I69]).
+
+- Updated docs and example config file because of breaking HomeAssistant
+  MQTT light change for dimmers ([Issue #88][I88]).
+
+### Additions
+- Support for fast on and off commands and reporting has been added.  The
+  on/off mode (normal, fast, instant) is now a command input as well as an
+  output flag in the state templates.  This allows double-clicking of
+  switches to be used in automation triggers (thanks @NickWaterton).
+  ([Issue #66][I66]).
+
+- Added support for manual mode state reporting (holding buttons down).
+  Supported by dimmer, keypadlinc, remote, and switch (thanks
+  @NickWaterton). ([Issue #104][I104]).
+
+- New command 'get_model' added to the command line tool to retrieve and save
+  the Insteon device cat, sub_cat, and firmware revision (thanks @krkeegan).
+  ([Issue #55][I55]).
+
+- New command 'join' added to the command line tool to perform a two-way
+  pairing and refresh to link a device to the modem.  This combines the
+  previous linknig and pair command into a single command (thanks @krkeegan).
+  ([Issue #97][I97]).
+
+- New improved NAK error response codes makes it easier to understand errors
+  when the devices can't communicate (thanks @krkeegan).  ([Issue #95][I95]).
+
+## [0.6.4]
+
+### Additions
+- Added on_level flag support for dimmers and KeyPadLinc's to set the light
+  level when the on button is pressed ([Issue #70][I70]).
+
+### Fixes
+- Multiple output messages queued to the Insteon devices causes some messages
+  to be lost ([Issue #86][I86]).
+
 ## [0.6.3]
+
+### Additions
+- Added on_level flag support for dimmers and KeyPadLinc's to set the light
+  level when the on button is pressed ([Issue #70][I70]).
 
 ### Breaking Changes
 - KeypadLinc now supports both dimmer and on/off device types.  This required
   changing the KeypadLinc inputs in the MQTT portion of the config.yaml file.
-  See the file in the repository for the new input fields. ([Issue #33][I33]).
+  See the file in the repository for the new input fields ([Issue #33][I33]).
 
 ### Additions
+- HassIO and docker support and is now available.  See the main doc page for
+  a link to the docs (thanks @lnr0626) ([Issue #63][I63], [PR #76][I76]).
+
 - Added on/off outlet support ([Issue #48][I48]).
 
 - Added support for older I1 devices (thanks @krkeegan).  This should allow
@@ -162,4 +211,15 @@
 [I43]: https://github.com/TD22057/insteon-mqtt/issues/43
 [I45]: https://github.com/TD22057/insteon-mqtt/issues/45
 [I48]: https://github.com/TD22057/insteon-mqtt/issues/48
+[I55]: https://github.com/TD22057/insteon-mqtt/issues/55
 [I59]: https://github.com/TD22057/insteon-mqtt/issues/59
+[I63]: https://github.com/TD22057/insteon-mqtt/issues/63
+[I66]: https://github.com/TD22057/insteon-mqtt/issues/66
+[I69]: https://github.com/TD22057/insteon-mqtt/issues/69
+[I70]: https://github.com/TD22057/insteon-mqtt/issues/70
+[I76]: https://github.com/TD22057/insteon-mqtt/issues/76
+[I86]: https://github.com/TD22057/insteon-mqtt/issues/86
+[I88]: https://github.com/TD22057/insteon-mqtt/issues/88
+[I95]: https://github.com/TD22057/insteon-mqtt/issues/95
+[I97]: https://github.com/TD22057/insteon-mqtt/issues/97
+[I104]: https://github.com/TD22057/insteon-mqtt/issues/104

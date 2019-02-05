@@ -9,7 +9,7 @@ My initial intent with this package is better integrate Insteon into
 Home Assistant and make it easier and more understandable to add new
 features and devices.
 
-Version: 0.6.2  ([History](HISTORY.md))
+Version: 0.6.4  ([History](HISTORY.md))
 
 ### Breaking changes from last version:
 
@@ -22,6 +22,8 @@ Version: 0.6.2  ([History](HISTORY.md))
 
 Blah, blah, blah, too much reading, how do I use it?  [Read the quick
 start guide](docs/quick_start.md)
+
+Using hassio? [Read the hass.io quick start guide](docs/hassio_quick_start.md)
 
 
 # Overview
@@ -86,7 +88,6 @@ future enhancements:
 
 - Finish commenting all of the code.
 - Full suite of unit tests.
-- PIP packaging and installation.
 - YAML input configuration validation.
 - Heal network (remove records for missing devices, fix missing links).
 - Modem and device scene management.  Define all the links (scenes) in

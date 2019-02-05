@@ -9,12 +9,14 @@ from ..CommandSeq import CommandSeq
 from .. import handler
 from .. import log
 from .. import message as Msg
+from .. import on_off
 from ..Signal import Signal
 from .. import util
 
 LOG = log.get_logger()
 
 
+#===========================================================================
 class Switch(Base):
     """Insteon on/off switch device.
 
@@ -50,9 +52,6 @@ class Switch(Base):
                  above 0 is treated as on.  Optional arg 'instant' with value
                  True or False to change state instantly (default=False).
     """
-    on_codes = [0x11, 0x12, 0x21, 0x23]  # on, fast on, instant on, manual on
-    off_codes = [0x13, 0x14, 0x22]  # off, fast off, instant off
-
     def __init__(self, protocol, modem, address, name=None):
         """Constructor
 
@@ -69,7 +68,12 @@ class Switch(Base):
         self._is_on = False
 
         # Support on/off style signals.
-        self.signal_active = Signal()  # (Device, bool)
+        # API: func(Device, bool is_on, on_off.Mode mode)
+        self.signal_active = Signal()
+
+        # Manual mode start up, down, off
+        # API: func(Device, on_off.Manual mode)
+        self.signal_manual = Signal()
 
         # Remove (mqtt) commands mapped to methods calls.  Add to the
         # base class defined commands.
@@ -134,7 +138,8 @@ class Switch(Base):
         return self._is_on
 
     #-----------------------------------------------------------------------
-    def on(self, group=0x01, level=None, instant=False, on_done=None):
+    def on(self, group=0x01, level=None, mode=on_off.Mode.NORMAL,
+           on_done=None):
         """Turn the device on.
 
         This will send the command to the device to update it's state.
@@ -143,14 +148,16 @@ class Switch(Base):
 
         TODO: doc
         Args:
+        TODO
           instant:  (bool) False for a normal ramping change, True for an
                     instant change.
         """
-        LOG.info("Switch %s cmd: on", self.addr)
+        LOG.info("Switch %s cmd: on %s", self.addr, mode)
         assert group == 0x01
+        assert isinstance(mode, on_off.Mode)
 
-        # Send an on or instant on command.
-        cmd1 = 0x11 if not instant else 0x21
+        # Send the requested on code value.
+        cmd1 = on_off.Mode.encode(True, mode)
         msg = Msg.OutStandard.direct(self.addr, cmd1, 0xff)
 
         # Use the standard command handler which will notify us when
@@ -161,7 +168,7 @@ class Switch(Base):
         self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def off(self, group=0x01, instant=False, on_done=None):
+    def off(self, group=0x01, mode=on_off.Mode.NORMAL, on_done=None):
         """Turn the device off.
 
         This will send the command to the device to update it's state.
@@ -172,12 +179,12 @@ class Switch(Base):
           instant:  (bool) False for a normal ramping change, True for an
                     instant change.
         """
-        LOG.info("Switch %s cmd: off", self.addr)
+        LOG.info("Switch %s cmd: off %s", self.addr, mode)
         assert group == 0x01
+        assert isinstance(mode, on_off.Mode)
 
-        # Send an off or instant off command.  Instant off is the same
-        # command as instant on, just with the level set to 0x00.
-        cmd1 = 0x13 if not instant else 0x21
+        # Send an off or instant off command.
+        cmd1 = on_off.Mode.encode(False, mode)
         msg = Msg.OutStandard.direct(self.addr, cmd1, 0x00)
 
         # Use the standard command handler which will notify us when
@@ -188,22 +195,23 @@ class Switch(Base):
         self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def set(self, level, group=0x01, instant=False, on_done=None):
+    def set(self, level, group=0x01, mode=on_off.Mode.NORMAL, on_done=None):
         """Set the device on or off.
 
         This will send the command to the device to update it's state.
         When we get an ACK of the result, we'll change our internal
         state and emit the state changed signals.
 
+        TODO doc
         Args:
           level:    (int/bool) If non zero, turn the device on.
           instant:  (bool) False for a normal ramping change, True for an
                     instant change.
         """
         if level:
-            self.on(group, level, instant, on_done)
+            self.on(group, mode, on_done)
         else:
-            self.off(group, instant, on_done)
+            self.off(group, mode, on_done)
 
     #-----------------------------------------------------------------------
     def scene(self, is_on, group=0x01, on_done=None):
@@ -324,20 +332,34 @@ class Switch(Base):
             self.broadcast_done = None
             return
 
-        # On command.  0x11: on, 0x12: on fast
-        elif msg.cmd1 in Switch.on_codes:
-            LOG.info("Switch %s broadcast ON grp: %s", self.addr, msg.group)
-            self._set_is_on(True)
+        # On/off command codes.
+        elif on_off.Mode.is_valid(msg.cmd1):
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            LOG.info("Switch %s broadcast grp: %s on: %s mode: %s", self.addr,
+                     msg.group, is_on, mode)
 
-        # Off command. 0x13: off, 0x14: off fast
-        elif msg.cmd1 in Switch.off_codes:
-            LOG.info("Switch %s broadcast OFF grp: %s", self.addr, msg.group)
+            if is_on:
+                self._set_is_on(True, mode)
 
             # If broadcast_done is active, this is a generated broadcast and
             # we need to manually turn the device off so don't update it's
             # state until that occurs.
-            if not self.broadcast_done:
-                self._set_is_on(False)
+            elif not self.broadcast_done:
+                self._set_is_on(False, mode)
+
+        # manual mode (holding buttons down)
+        # Starting or stopping manual increment (cmd2 0x00=up, 0x01=down)
+        elif on_off.Manual.is_valid(msg.cmd1):
+            manual = on_off.Manual.decode(msg.cmd1, msg.cmd2)
+            LOG.info("Switch %s manual change %s", self.addr, manual)
+
+            self.signal_manual.emit(self, manual)
+
+            # Switches change state when the switch is held.
+            if manual == on_off.Manual.UP:
+                self._set_is_on(True, on_off.Mode.MANUAL)
+            elif manual == on_off.Manual.DOWN:
+                self._set_is_on(False, on_off.Mode.MANUAL)
 
         # This will find all the devices we're the controller of for
         # this group and call their handle_group_cmd() methods to
@@ -358,8 +380,7 @@ class Switch(Base):
         """
         LOG.ui("Switch %s refresh on=%s", self.label, msg.cmd2 > 0x00)
 
-        # Current on/off level is stored in cmd2 so update our level
-        # to match.
+        # Current on/off level is stored in cmd2 so update our level.
         self._set_is_on(msg.cmd2 > 0x00)
 
     #-----------------------------------------------------------------------
@@ -379,13 +400,16 @@ class Switch(Base):
         # state and emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("Switch %s ACK: %s", self.addr, msg)
-            self._set_is_on(msg.cmd2 > 0x00)
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            self._set_is_on(is_on, mode)
             on_done(True, "Switch state updated to on=%s" % self._is_on,
                     self._is_on)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("Switch %s NAK error: %s", self.addr, msg)
-            on_done(False, "Switch state update failed", None)
+            LOG.error("Switch %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Switch state update failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_scene(self, msg, on_done):
@@ -406,11 +430,13 @@ class Switch(Base):
             on_done(True, "Scene triggered", None)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("Switch %s NAK error: %s", self.addr, msg)
-            on_done(False, "Scene trigger failed failed", None)
+            LOG.error("Switch %s NAK error: %s, Message: %s", self.addr,
+                      msg.nak_str(), msg)
+            on_done(False, "Scene trigger failed failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
-    def handle_group_cmd(self, addr, group, cmd):
+    def handle_group_cmd(self, addr, msg):
         """Respond to a group command for this device.
 
         This is called when this device is a responder to a scene.
@@ -420,30 +446,29 @@ class Switch(Base):
         Args:
           addr:  (Address) The device that sent the message.  This is the
                  controller in the scene.
-          group: (int) The group being triggered.
-          cmd:   (int) The command byte being sent.
+          msg:   (InptStandard) Broadcast message from the device.  Use
+                 msg.group to find the group and msg.cmd1 for the command.
         """
         # Make sure we're really a responder to this message.  This
         # shouldn't ever occur.
-        entry = self.db.find(addr, group, is_controller=False)
+        entry = self.db.find(addr, msg.group, is_controller=False)
         if not entry:
             LOG.error("Switch %s has no group %s entry from %s", self.addr,
-                      group, addr)
+                      msg.group, addr)
             return
 
-        # 0x11: on, 0x12: on fast
-        if cmd in Switch.on_codes:
-            self._set_is_on(True)
-
-        # 0x13: off, 0x14: off fast
-        elif cmd in Switch.off_codes:
-            self._set_is_on(False)
+        # Unlike dimmer, I don't think that an on/off switch can participate
+        # in a manual mode group on/off command so that handling isn't here.
+        if on_off.Mode.is_valid(msg.cmd1):
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            self._set_is_on(is_on, mode)
 
         else:
-            LOG.warning("Switch %s unknown group cmd %#04x", self.addr, cmd)
+            LOG.warning("Switch %s unknown group cmd %#04x", self.addr,
+                        msg.cmd1)
 
     #-----------------------------------------------------------------------
-    def _set_is_on(self, is_on):
+    def _set_is_on(self, is_on, mode=on_off.Mode.NORMAL):
         """Set the device on/off state.
 
         This will change the internal state and emit the state changed
@@ -452,10 +477,10 @@ class Switch(Base):
         Args:
           is_on:   (bool) True if motion is active, False if it isn't.
         """
-        LOG.info("Setting device %s on %s", self.label, is_on)
+        LOG.info("Setting device %s on %s %s", self.label, is_on, mode)
         self._is_on = bool(is_on)
 
         # Notify others that the switch state has changed.
-        self.signal_active.emit(self, self._is_on)
+        self.signal_active.emit(self, self._is_on, mode)
 
     #-----------------------------------------------------------------------

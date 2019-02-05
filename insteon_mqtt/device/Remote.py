@@ -5,6 +5,7 @@
 #===========================================================================
 from ..CommandSeq import CommandSeq
 from .. import log
+from .. import on_off
 from ..Signal import Signal
 from .Base import Base
 
@@ -51,10 +52,6 @@ class Remote(Base):
                  see if the database is current.  Reloads the modem database
                  if needed.  This will emit the current state as a signal.
     """
-
-    on_codes = [0x11, 0x12, 0x21, 0x23]  # on, fast on, instant on, manual on
-    off_codes = [0x13, 0x14, 0x22]  # off, fast off, instant off
-
     def __init__(self, protocol, modem, address, name, num_button):
         """Constructor
 
@@ -69,8 +66,14 @@ class Remote(Base):
         """
         super().__init__(protocol, modem, address, name)
         self.num = num_button
+        self.type_name = "mini_remote_%d" % self.num
 
-        self.signal_pressed = Signal()  # (Device, int group, bool on)
+        # (Device, int group, bool on, on_off.Mode mode)
+        self.signal_pressed = Signal()
+
+        # Manual mode start up, down, off
+        # API: func(Device, int group, on_off.Manual mode)
+        self.signal_manual = Signal()
 
     #-----------------------------------------------------------------------
     def pair(self, on_done=None):
@@ -132,39 +135,27 @@ class Remote(Base):
         Args:
           msg:   (InptStandard) Broadcast message from the device.
         """
-        is_on = None
-        cmd = msg.cmd1
-
         # ACK of the broadcast - ignore this.
-        if cmd == 0x06:
+        if msg.cmd1 == 0x06:
             LOG.info("Remote %s broadcast ACK grp: %s", self.addr, msg.group)
             return
 
-        # On command.  0x11: on, 0x12: on fast
-        elif cmd in Remote.on_codes:
-            LOG.info("Remote %s broadcast ON grp: %s", self.addr, msg.group)
-            is_on = True
+        # On/off command codes.
+        elif on_off.Mode.is_valid(msg.cmd1):
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            LOG.info("Remote %s broadcast grp: %s on: %s mode: %s", self.addr,
+                     msg.group, is_on, mode)
 
-        # Off command. 0x13: off, 0x14: off fast
-        elif cmd in Remote.off_codes:
-            LOG.info("Remote %s broadcast OFF grp: %s", self.addr, msg.group)
-            is_on = False
+            # Notify others that the button was pressed.
+            self.signal_pressed.emit(self, msg.group, is_on, mode)
 
-        # Starting manual increment (cmd2 0x00=up, 0x01=down)
-        elif cmd == 0x17:
-            # This is kind of arbitrary - but if the button is held
-            # down we'll emit an on signal if it's dimming up and an
-            # off signal if it's dimming down.
-            is_on = msg.cmd2 == 0x00  # on = up, off = down
+        # Starting or stopping manual increment (cmd2 0x00=up, 0x01=down)
+        elif on_off.Manual.is_valid(msg.cmd1):
+            manual = on_off.Manual.decode(msg.cmd1, msg.cmd2)
+            LOG.info("Remote %s manual change group: %s %s", self.addr,
+                     msg.group, manual)
 
-        # Stopping manual increment (cmd2 = unused)
-        elif cmd == 0x18:
-            # Nothing to do - the remote has no state to query about.
-            pass
-
-        # Notify others that the button was pressed.
-        if is_on is not None:
-            self.signal_pressed.emit(self, msg.group, is_on)
+            self.signal_manual.emit(self, msg.group, manual)
 
         # This will find all the devices we're the controller of for
         # this group and call their handle_group_cmd() methods to

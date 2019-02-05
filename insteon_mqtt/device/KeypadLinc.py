@@ -8,10 +8,10 @@ from ..CommandSeq import CommandSeq
 from .. import handler
 from .. import log
 from .. import message as Msg
+from .. import on_off
 from ..Signal import Signal
 from .. import util
 from .Base import Base
-from .Dimmer import Dimmer
 
 LOG = log.get_logger()
 
@@ -21,9 +21,8 @@ class KeypadLinc(Base):
 
     TODO: docs
 
-    Each button (up to 8) has an LED light.  Light status can be
-    retrieved by sending 0x19 0x01 which returns cmd1=db delta and
-    cmd2=LED bit flags.
+    Each button (up to 8) has an LED light.  Light status can be retrieved by
+    sending 0x19 0x01 which returns cmd1=db delta and cmd2=LED bit flags.
     """
 
     #-----------------------------------------------------------------------
@@ -44,9 +43,15 @@ class KeypadLinc(Base):
 
         # Switch or dimmer type.
         self.is_dimmer = dimmer
+        self.type_name = "keypad_linc" if dimmer else "keypad_linc_sw"
 
         # Group on/off signal.
-        self.signal_active = Signal()  # (Device, int group, int level)
+        # API: func(Device, int group, int level, on_off.Mode mode)
+        self.signal_active = Signal()
+
+        # Manual mode start up, down, off
+        # API: func(Device, int group, on_off.Manual mode)
+        self.signal_manual = Signal()
 
         # Remote (mqtt) commands mapped to methods calls.  Add to the
         # base class defined commands.
@@ -85,13 +90,12 @@ class KeypadLinc(Base):
     def pair(self, on_done=None):
         """Pair the device with the modem.
 
-        This only needs to be called one time.  It will set the device
-        as a controller and the modem as a responder so the modem will
-        see group broadcasts and report them to us.
+        This only needs to be called one time.  It will set the device as a
+        controller and the modem as a responder so the modem will see group
+        broadcasts and report them to us.
 
-        The device must already be a responder to the modem (push set
-        on the modem, then set on the device) so we can update it's
-        database.
+        The device must already be a responder to the modem (push set on the
+        modem, then set on the device) so we can update it's database.
         """
         LOG.info("KeypadLinc %s pairing", self.addr)
 
@@ -159,12 +163,12 @@ class KeypadLinc(Base):
         seq.run()
 
     #-----------------------------------------------------------------------
-    def on(self, group=1, level=0xff, instant=False, on_done=None):
+    def on(self, group=1, level=0xff, mode=on_off.Mode.NORMAL, on_done=None):
         """Turn the device on.
 
-        This will send the command to the device to update it's state.
-        When we get an ACK of the result, we'll change our internal
-        state and emit the state changed signals.
+        This will send the command to the device to update it's state.  When
+        we get an ACK of the result, we'll change our internal state and emit
+        the state changed signals.
 
         Args:
           group:    (int) The group number to set.  1 is the load.  Must be
@@ -177,6 +181,7 @@ class KeypadLinc(Base):
         LOG.info("KeypadLinc %s cmd: on %s", self.addr, level)
         assert 1 <= group <= 8
         assert level >= 0 and level <= 0xff
+        assert isinstance(mode, on_off.Mode)
 
         # Non-load buttons are turned on/off via the LED command.
         if group != 1:
@@ -188,24 +193,24 @@ class KeypadLinc(Base):
             if not self.is_dimmer:
                 level = 0xff
 
-            # Send an on or instant on command.
-            cmd1 = 0x11 if not instant else 0x21
+            # Send the correct on code.
+            cmd1 = on_off.Mode.encode(True, mode)
             msg = Msg.OutStandard.direct(self.addr, cmd1, level)
 
-            # Use the standard command handler which will notify us when
-            # the command is ACK'ed.
+            # Use the standard command handler which will notify us when the
+            # command is ACK'ed.
             msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
             # Send the message to the PLM modem for protocol.
             self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def off(self, group=1, instant=False, on_done=None):
+    def off(self, group=1, mode=on_off.Mode.NORMAL, on_done=None):
         """Turn the device off.
 
-        This will send the command to the device to update it's state.
-        When we get an ACK of the result, we'll change our internal
-        state and emit the state changed signals.
+        This will send the command to the device to update it's state.  When
+        we get an ACK of the result, we'll change our internal state and emit
+        the state changed signals.
 
         Args:
           group:    (int) The group number to set.  1 is the load.  Must be
@@ -215,6 +220,7 @@ class KeypadLinc(Base):
         """
         LOG.info("KeypadLinc %s cmd: off", self.addr)
         assert 1 <= group <= 8
+        assert isinstance(mode, on_off.Mode)
 
         # Non-load buttons are turned on/off via the LED command.
         if group != 1:
@@ -223,23 +229,23 @@ class KeypadLinc(Base):
         # Group 1 uses a direct command to set the level.
         else:
             # Send an off or instant off command.
-            cmd1 = 0x13 if not instant else 0x21
+            cmd1 = on_off.Mode.encode(True, mode)
             msg = Msg.OutStandard.direct(self.addr, cmd1, 0x00)
 
-            # Use the standard command handler which will notify us when
-            # the command is ACK'ed.
+            # Use the standard command handler which will notify us when the
+            # command is ACK'ed.
             msg_handler = handler.StandardCmd(msg, self.handle_ack, on_done)
 
             # Send the message to the PLM modem for protocol.
             self.send(msg, msg_handler)
 
     #-----------------------------------------------------------------------
-    def set(self, level, group=1, instant=False, on_done=None):
+    def set(self, level, group=1, mode=on_off.Mode.NORMAL, on_done=None):
         """Set the device on or off.
 
-        This will send the command to the device to update it's state.
-        When we get an ACK of the result, we'll change our internal
-        state and emit the state changed signals.
+        This will send the command to the device to update it's state.  When
+        we get an ACK of the result, we'll change our internal state and emit
+        the state changed signals.
 
         Args:
           level:    (int/bool) If non zero, turn the device on.  Should be
@@ -251,9 +257,9 @@ class KeypadLinc(Base):
                     instant change.
         """
         if level:
-            self.on(group, level, instant, on_done)
+            self.on(group, level, mode, on_done)
         else:
-            self.off(group, instant, on_done)
+            self.off(group, mode, on_done)
 
     #-----------------------------------------------------------------------
     def increment_up(self, on_done=None):
@@ -261,9 +267,9 @@ class KeypadLinc(Base):
 
         Levels increment in units of 8 (32 divisions from off to on).
 
-        This will send the command to the device to update it's state.
-        When we get an ACK of the result, we'll change our internal
-        state and emit the state changed signals.
+        This will send the command to the device to update it's state.  When
+        we get an ACK of the result, we'll change our internal state and emit
+        the state changed signals.
         """
         if not self.is_dimmer:
             LOG.error("KeypadLinc %s switch doesn't support increment up "
@@ -283,9 +289,9 @@ class KeypadLinc(Base):
 
         Levels increment in units of 8 (32 divisions from off to on).
 
-        This will send the command to the device to update it's state.
-        When we get an ACK of the result, we'll change our internal
-        state and emit the state changed signals.
+        This will send the command to the device to update it's state.  When
+        we get an ACK of the result, we'll change our internal state and emit
+        the state changed signals.
         """
         if not self.is_dimmer:
             LOG.error("KeypadLinc %s switch doesn't support increment down "
@@ -320,8 +326,8 @@ class KeypadLinc(Base):
             ] + [0x00] * 8)
         msg = Msg.OutExtended.direct(self.addr, 0x30, 0x00, data)
 
-        # Use the standard command handler which will notify us when
-        # the command is ACK'ed.
+        # Use the standard command handler which will notify us when the
+        # command is ACK'ed.
         callback = on_done if is_on else None
         msg_handler = handler.StandardCmd(msg, self.handle_scene, callback)
         self.send(msg, msg_handler)
@@ -365,8 +371,8 @@ class KeypadLinc(Base):
 
         msg = Msg.OutExtended.direct(self.addr, 0x2e, 0x00, data)
 
-        # Use the standard command handler which will notify us when
-        # the command is ACK'ed.
+        # Use the standard command handler which will notify us when the
+        # command is ACK'ed.
         callback = functools.partial(self.handle_led_ack, group=group,
                                      is_on=is_on, led_bits=led_bits)
         msg_handler = handler.StandardCmd(msg, callback, on_done)
@@ -394,9 +400,39 @@ class KeypadLinc(Base):
 
         msg = Msg.OutExtended.direct(self.addr, 0x2e, 0x00, data)
 
+        # Use the standard command handler which will notify us when the
+        # command is ACK'ed.
+        msg_handler = handler.StandardCmd(msg, self.handle_backlight,
+                                          on_done)
+
+        # Send the message to the PLM modem for protocol.
+        self.send(msg, msg_handler)
+
+    #-----------------------------------------------------------------------
+    def set_on_level(self, level, on_done=None):
+        """TODO: doc
+
+        NOTE: default factory backlight == 0x1f
+        """
+        if not self.is_dimmer:
+            LOG.error("KeypadLinc %s switch doesn't support setting on level",
+                      self.addr)
+            return
+
+        LOG.info("KeypadLinc %s setting on level to %s", self.label, level)
+
+        # Extended message data - see Insteon dev guide p156.
+        data = bytes([
+            0x01,   # D1 must be group 0x01
+            0x06,   # D2 set on level when button is pressed
+            level,  # D3 brightness level
+            ] + [0x00] * 11)
+
+        msg = Msg.OutExtended.direct(self.addr, 0x2e, 0x00, data)
+
         # Use the standard command handler which will notify us when
         # the command is ACK'ed.
-        msg_handler = handler.StandardCmd(msg, self.handle_backlight,
+        msg_handler = handler.StandardCmd(msg, self.handle_on_level,
                                           on_done)
 
         # Send the message to the PLM modem for protocol.
@@ -412,15 +448,24 @@ class KeypadLinc(Base):
 
         # Check the input flags to make sure only ones we can understand were
         # passed in.
-        flags = set(["backlight"])
+        flags = set(["backlight", "on_level"])
         unknown = set(kwargs.keys()).difference(flags)
         if unknown:
             raise Exception("Unknown KeypadLinc flags input: %s.\n Valid "
                             "flags are: %s" % unknown, flags)
 
-        # FUTURE: to support other flags, use a CommandSeq
-        backlight = util.input_byte(kwargs, "backlight")
-        self.set_backlight(backlight, on_done)
+        seq = CommandSeq(self.protocol, "KeypadLinc set_flags complete",
+                         on_done)
+
+        if "backlink" in kwargs:
+            backlight = util.input_byte(kwargs, "backlight")
+            seq.add(self.set_backlight, backlight)
+
+        if "on_level" in kwargs:
+            on_level = util.input_byte(kwargs, "on_level")
+            seq.add(self.set_on_level, on_level)
+
+        seq.run()
 
     #-----------------------------------------------------------------------
     def handle_backlight(self, msg, on_done):
@@ -430,6 +475,15 @@ class KeypadLinc(Base):
             on_done(True, "Backlight level updated", None)
         else:
             on_done(False, "Backlight level failed", None)
+
+    #-----------------------------------------------------------------------
+    def handle_on_level(self, msg, on_done):
+        """TODO: doc
+        """
+        if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
+            on_done(True, "Button on level updated", None)
+        else:
+            on_done(False, "Button on level failed", None)
 
     #-----------------------------------------------------------------------
     def handle_refresh(self, msg):
@@ -442,20 +496,20 @@ class KeypadLinc(Base):
           msg:  (message.InpStandard) The refresh message reply.  The current
                 device state is in the msg.cmd2 field.
         """
-        # NOTE: This is called by the handler.DeviceRefresh class when
-        # the refresh message send by Base.refresh is ACK'ed.
+        # NOTE: This is called by the handler.DeviceRefresh class when the
+        # refresh message send by Base.refresh is ACK'ed.
         LOG.ui("KeypadLinc %s refresh at level %s", self.addr, msg.cmd2)
 
-        # Current group 1 level is stored in cmd2 so update our level
-        # to match.
+        # Current group 1 level is stored in cmd2 so update our level to
+        # match.
         self._set_level(1, msg.cmd2)
 
     #-----------------------------------------------------------------------
     def handle_led_ack(self, msg, on_done, group, is_on, led_bits):
         """TODO: doc
         """
-        # If this it the ACK we're expecting, update the internal
-        # state and emit our signals.
+        # If this it the ACK we're expecting, update the internal state and
+        # emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("KeypadLinc LED %s group %s ACK: %s", self.addr, group,
                       msg)
@@ -472,8 +526,10 @@ class KeypadLinc(Base):
             on_done(True, msg, is_on)
 
         elif msg.flags.type == Msg.Flags.Type.DIRECT_NAK:
-            LOG.error("KeypadLinc LED %s NAK error: %s", self.addr, msg)
-            on_done(False, "KeypadLinc %s LED update failed", None)
+            LOG.error("KeypadLinc LED %s NAK error: %s, Message: %s",
+                      self.addr, msg.nak_str(), msg)
+            on_done(False, "KeypadLinc %s LED update failed. " + msg.nak_str(),
+                    None)
 
     #-----------------------------------------------------------------------
     def handle_led_refresh(self, msg):
@@ -503,21 +559,19 @@ class KeypadLinc(Base):
         """Handle broadcast messages from this device.
 
         The broadcast message from a device is sent when the device is
-        triggered.  The message has the group ID in it.  We'll update
-        the device state and look up the group in the all link
-        database.  For each device that is in the group (as a
-        reponsder), we'll call handle_group_cmd() on that device to
-        trigger it.  This way all the devices in the group are updated
-        to the correct values when we see the broadcast message.
+        triggered.  The message has the group ID in it.  We'll update the
+        device state and look up the group in the all link database.  For
+        each device that is in the group (as a reponsder), we'll call
+        handle_group_cmd() on that device to trigger it.  This way all the
+        devices in the group are updated to the correct values when we see
+        the broadcast message.
 
         Args:
           msg:   (InptStandard) Broadcast message from the device.
         """
-        # Non-group 1 messages are for the scene buttons on
-        # keypadlinc.  Treat those the same as the remote control
-        # does.  They don't have levels to find/set but have similar
-        # messages to the dimmer load.
-        cmd = msg.cmd1
+        # Non-group 1 messages are for the scene buttons on keypadlinc.
+        # Treat those the same as the remote control does.  They don't have
+        # levels to find/set but have similar messages to the dimmer load.
 
         # ACK of the broadcast - ignore this.  Unless we sent a simulated off
         # scene in which case run the broadcast done handler.  This is a
@@ -530,42 +584,47 @@ class KeypadLinc(Base):
             self.broadcast_done = None
             return
 
-        # On command.  0x11: on, 0x12: on fast.  How do we tell the level for
-        # a dimmer?  It's not in the message anywhere.
-        elif cmd in Dimmer.on_codes:
-            LOG.info("KeypadLinc %s broadcast ON grp: %s", self.addr,
-                     msg.group)
-            # Notify others that the button was pressed.
-            self._set_level(msg.group, 0xff)
+        # On/off commands.  How do we tell the level?  It's not in the
+        # message anywhere.
+        elif on_off.Mode.is_valid(msg.cmd1):
+            is_on, mode = on_off.Mode.decode(msg.cmd1)
+            LOG.info("KeypadLinc %s broadcast grp: %s on: %s mode: %s",
+                     self.addr, msg.group, is_on, mode)
 
-        # Off command. 0x13: off, 0x14: off fast
-        elif cmd in Dimmer.off_codes:
-            LOG.info("KeypadLinc %s broadcast OFF grp: %s", self.addr,
-                     msg.group)
+            if is_on:
+                self._set_level(msg.group, 0xff, mode)
 
             # If broadcast_done is active, this is a generated broadcast and
             # we need to manually turn the device off so don't update it's
             # state until that occurs.
-            if not self.broadcast_done:
+            elif not self.broadcast_done:
                 # Notify others that the button was pressed.
-                self._set_level(msg.group, 0)
+                self._set_level(msg.group, 0x00, mode)
 
-        # Starting manual increment (cmd2 0x00=up, 0x01=down)
-        elif cmd == 0x17:
-            LOG.info("KeypadLinc %s starting manual change grp: %s %s",
-                     self.addr, msg.group, "UP" if msg.cmd2 == 0x00 else "DN")
+        # Starting or stopping manual increment (cmd2 0x00=up, 0x01=down)
+        elif on_off.Manual.is_valid(msg.cmd1):
+            manual = on_off.Manual.decode(msg.cmd1, msg.cmd2)
+            LOG.info("KeypadLinc %s manual change %s", self.addr, manual)
 
-        # Stopping manual increment (cmd2 = unused)
-        elif cmd == 0x18:
-            LOG.info("KeypadLinc %s stopping manual change grp %s", self.addr,
-                     msg.group)
+            self.signal_manual.emit(self, msg.group, manual)
 
-            # Ping the device to get the button states - we don't know what
-            # the keypadlinc things the state is - could be on or off.  Doing
-            # a dim down for a long time puts all the other devices "off" but
-            # the keypadlinc can still think that it's on.  So we have to do
-            # a refresh to find out.
-            self.refresh()
+            # Non-group 1 buttons don't change state in manual mode. (found
+            # through experiments)
+            if msg.group == 1:
+                # Switches change state when the switch is held.
+                if not is_dimmer:
+                    if manual == on_off.Manual.UP:
+                        self._set_level(0xff, on_off.Mode.MANUAL)
+                    elif manual == on_off.Manual.DOWN:
+                        self._set_is_on(0x00, on_off.Mode.MANUAL)
+
+                # Ping the device to get the dimmer states - we don't know
+                # what the keypadlinc things the state is - could be on or
+                # off.  Doing a dim down for a long time puts all the other
+                # devices "off" but the keypadlinc can still think that it's
+                # on.  So we have to do a refresh to find out.
+                elif manual == on_off.Manual.STOP:
+                    self.refresh()
 
         # Call the base class handler.  This will find all the devices we're
         # the controller of for this group and call their handle_group_cmd()
@@ -586,11 +645,12 @@ class KeypadLinc(Base):
           msg:  (message.InpStandard) The reply message from the device.
                 The on/off level will be in the cmd2 field.
         """
-        # If this it the ACK we're expecting, update the internal
-        # state and emit our signals.
+        # If this it the ACK we're expecting, update the internal state and
+        # emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("KeypadLinc %s ACK: %s", self.addr, msg)
-            self._set_level(1, msg.cmd2)
+            _is_on, mode = on_off.Mode.decode(msg.cmd1)
+            self._set_level(1, msg.cmd2, mode)
             on_done(True, "KeypadLinc state updated to %s" % self._level,
                     msg.cmd2)
 
@@ -610,8 +670,8 @@ class KeypadLinc(Base):
         Args:
           msg:  (message.InpStandard) The reply message from the device.
         """
-        # If this it the ACK we're expecting, update the internal
-        # state and emit our signals.
+        # If this it the ACK we're expecting, update the internal state and
+        # emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("KeypadLinc %s ACK: %s", self.addr, msg)
             on_done(True, "Scene triggered", None)
@@ -624,9 +684,8 @@ class KeypadLinc(Base):
     def handle_increment(self, msg, on_done, delta):
         """TODO: doc
         """
-
-        # If this it the ACK we're expecting, update the internal
-        # state and emit our signals.
+        # If this it the ACK we're expecting, update the internal state and
+        # emit our signals.
         if msg.flags.type == Msg.Flags.Type.DIRECT_ACK:
             LOG.debug("KeypadLinc %s ACK: %s", self.addr, msg)
             # Add the delta and bound at [0, 255]
@@ -642,12 +701,12 @@ class KeypadLinc(Base):
             on_done(False, "KeypadLinc %s state update failed", None)
 
     #-----------------------------------------------------------------------
-    def handle_group_cmd(self, addr, group, cmd):
+    def handle_group_cmd(self, addr, msg):
         """Respond to a group command for this device.
 
-        This is called when this device is a responder to a scene.
-        The device should look up the responder entry for the group in
-        it's all link database and update it's state accordingly.
+        This is called when this device is a responder to a scene.  The
+        device should look up the responder entry for the group in it's all
+        link database and update it's state accordingly.
 
         Args:
           addr:  (Address) The device that sent the message.  This is the
@@ -655,51 +714,50 @@ class KeypadLinc(Base):
           msg:   (message.InpStandard) The broadcast message that was sent.
                  Use msg.group to find the scene group that was broadcast.
         """
-        # Make sure we're really a responder to this message.  This
-        # shouldn't ever occur.
+        group = msg.group
+        cmd1 = msg.cmd1
+
+        # Make sure we're really a responder to this message.  This shouldn't
+        # ever occur.
         entry = self.db.find(addr, group, is_controller=False)
         if not entry:
             LOG.error("KeypadLinc %s has no group %s entry from %s", self.addr,
                       group, addr)
             return
 
-        # 0x11: on, 0x12: on fast.  Dimmer codes is a superset of Switch
-        # codes so we can just use that for all on codes.
-        if cmd in Dimmer.on_codes:
-            level = 0xff
-            if group == 1 and self.is_dimmer:
+        # Handle on/off codes
+        if on_off.Mode.is_valid(cmd1):
+            is_on, mode = on_off.Mode.decode(cmd1)
+            level = 0xff if is_on else 0x00
+            if self.is_dimmer and is_on and group == 1:
                 level = entry.data[0]
 
-            self._set_level(group, level)
-
-        # 0x13: off, 0x14: off fast
-        elif cmd in Dimmer.off_codes:
-            self._set_level(group, 0x00)
+            self._set_level(group, level, mode)
 
         # Increment up (32 steps)
-        elif cmd == 0x15:
+        elif cmd1 == 0x15:
             assert group == 0x01
             self._set_level(group, min(0xff, self._level + 8))
 
         # Increment down
-        elif cmd == 0x16:
+        elif cmd1 == 0x16:
             assert group == 0x01
             self._set_level(group, max(0x00, self._level - 8))
 
-        # Starting manual increment (cmd2 0x00=up, 0x01=down)
-        elif cmd == 0x17:
-            pass
+        # Starting/stopping manual increment (cmd2 0x00=up, 0x01=down)
+        elif on_off.Manual.is_valid(msg.cmd1):
+            manual = on_off.Manual.decode(msg.cmd1, msg.cmd2)
+            self.signal_manual.emit(self, group, manual)
 
-        # Stopping manual increment (cmd2 = unused)
-        elif cmd == 0x18:
             # Ping the light to get the new level
-            self.refresh()
+            if manual == on_off.Manual.STOP:
+                self.refresh()
 
         else:
-            LOG.warning("KeypadLinc %s unknown cmd %#04x", self.addr, cmd)
+            LOG.warning("KeypadLinc %s unknown cmd %#04x", self.addr, cmd1)
 
     #-----------------------------------------------------------------------
-    def _set_level(self, group, level):
+    def _set_level(self, group, level, mode=on_off.Mode.NORMAL):
         """Set the device group 1 level state.
 
         This will change the internal state and emit the state changed
@@ -709,13 +767,14 @@ class KeypadLinc(Base):
           group:   (int) group to modify
           level:   (int) 0x00 for off, 0xff for 100%.
         """
-        LOG.info("Setting device %s grp=%s on=%s", self.label, group, level)
+        LOG.info("Setting device %s grp=%s on=%s %s", self.label, group,
+                 level, mode)
         if group == 0x01:
             self._level = level
 
         self._led_bits = util.bit_set(self._led_bits, group - 1,
                                       1 if level else 0)
 
-        self.signal_active.emit(self, group, level)
+        self.signal_active.emit(self, group, level, mode)
 
     #-----------------------------------------------------------------------
