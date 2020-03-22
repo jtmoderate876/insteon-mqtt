@@ -2,6 +2,7 @@
 #
 # Tests for: insteont_mqtt/db/Device.py
 #
+# pylint: disable=too-many-statements
 #===========================================================================
 import insteon_mqtt as IM
 import insteon_mqtt.message as Msg
@@ -22,6 +23,13 @@ class Test_Device:
         assert obj.engine is None
         obj.set_engine(1)
         assert obj.engine == 1
+
+        assert obj.desc is None
+        assert obj.firmware is None
+        obj.set_info(1, 2, 3)
+        assert obj.desc.dev_cat == 1
+        assert obj.desc.sub_cat == 2
+        assert obj.firmware == 3
 
         addr = IM.Address(0x10, 0xab, 0x1c)
         flags = Msg.Flags(Msg.Flags.Type.DIRECT, True)
@@ -96,7 +104,7 @@ class Test_Device:
         str(obj)
 
         j = obj.to_json()
-        obj2 = IM.db.Device.from_json(j, '')
+        obj2 = IM.db.Device.from_json(j, '', None)
         assert len(obj2.entries) == 4
         assert len(obj2.unused) == 1
         assert len(obj2.groups) == 2

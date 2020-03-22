@@ -87,9 +87,7 @@ class Test_StandardCmd:
         r = handler.msg_received(proto, out)
         assert r == Msg.UNKNOWN
 
-
         # Now pass in the input message.
-
         # expected input meesage
         flags = Msg.Flags(Msg.Flags.Type.DIRECT_ACK, False)
         msg = Msg.InpStandard(addr, addr, flags, 0x11, 0x01)
@@ -129,10 +127,10 @@ class Test_StandardCmd:
         assert calls[0] == msg
 
     #-----------------------------------------------------------------------
-    def test_engine_version(self):
+    def test_engine_version(self, tmpdir):
         # Tests response to get engine version
         proto = MockProto()
-        modem = MockModem()
+        modem = MockModem(tmpdir)
         calls = []
         addr = IM.Address('0a.12.34')
         device = IM.device.Base(proto, modem, addr)
@@ -149,12 +147,12 @@ class Test_StandardCmd:
         assert r == Msg.FINISHED
         assert calls[0] == "Operation complete"
         assert device.db.engine == 0
-        
+
         #i2
         msg = Msg.InpStandard(addr, addr, flags, 0x0D, 0x01)
         r = handler.msg_received(proto, msg)
         assert device.db.engine == 1
-        
+
         #i2cs
         msg = Msg.InpStandard(addr, addr, flags, 0x0D, 0x02)
         r = handler.msg_received(proto, msg)
@@ -168,6 +166,7 @@ class MockProto:
     def add_handler(self, *args):
         pass
 
+
 class MockModem:
-    def __init__(self):
-        self.save_path = ''
+    def __init__(self, path):
+        self.save_path = str(path)

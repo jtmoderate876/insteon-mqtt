@@ -5,8 +5,10 @@
 #===========================================================================
 from .. import log
 from .. import message as Msg
+from .. import db
 from .Base import Base
 from .DeviceDbGet import DeviceDbGet
+
 
 LOG = log.get_logger()
 
@@ -29,19 +31,19 @@ class DeviceRefresh(Base):
         """Constructor
 
         Args
-          device:    (Device) The Insteon device.
+          device (Device):  The Insteon device.
           callback:  Callback function to call when the reply arrives.  API:
-                        callback( Msg.InpStandard )
-          force:     (bool) If True, force a db download.  If False, only
-                     download the db if it's out of date.
-          on_done:   Finished callback.  Will be called when the refresh
-                     operation is done.
-          num_retry: (int) The number of times to retry the message if the
-                     handler times out without returning Msg.FINISHED.
-                     This count does include the initial sending so a
-                     retry of 3 will send once and then retry 2 more times.
-          skip_db:   (bool) If True, ignore the database version and don't
-                     download the database.
+                     callback( Msg.InpStandard )
+          force (bool):  If True, force a db download.  If False, only
+                download the db if it's out of date.
+          on_done:  Finished callback.  Will be called when the refresh
+                    operation is done.
+          num_retry (int):  The number of times to retry the message if the
+                    handler times out without returning Msg.FINISHED.
+                    This count does include the initial sending so a
+                    retry of 3 will send once and then retry 2 more times.
+          skip_db (bool):  If True, ignore the database version and don't
+                  download the database.
         """
         super().__init__(on_done, num_retry)
 
@@ -56,8 +58,8 @@ class DeviceRefresh(Base):
         """See if we can handle the message.
 
         Args:
-          protocol:  (Protocol) The Insteon Protocol object
-          msg:       Insteon message object that was read.
+          protocol (Protocol):  The Insteon Protocol object
+          msg:  Insteon message object that was read.
 
         Returns:
           Msg.UNKNOWN if we can't handle this message.
@@ -115,10 +117,18 @@ class DeviceRefresh(Base):
                 # and the handler will update the database.  We need a retry
                 # count here because battery powered devices don't always
                 # respond right away.
-                db_msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00,
-                                                bytes(14))
-                msg_handler = DeviceDbGet(self.device.db, on_done, num_retry=3)
-                protocol.send(db_msg, msg_handler)
+                if self.device.db.engine == 0:
+                    scan_manager = db.DeviceScanManagerI1(self.device,
+                                                          self.device.db,
+                                                          on_done=on_done,
+                                                          num_retry=3)
+                    scan_manager.start_scan()
+                else:
+                    db_msg = Msg.OutExtended.direct(self.addr, 0x2f, 0x00,
+                                                    bytes(14))
+                    msg_handler = DeviceDbGet(self.device.db, on_done,
+                                              num_retry=3)
+                    self.device.send(db_msg, msg_handler)
 
             # Either way - this transaction is complete.
             return Msg.FINISHED
